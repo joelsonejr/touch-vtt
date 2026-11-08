@@ -33,6 +33,14 @@ const measuredTemplateManager = MeasuredTemplateManager.init()
 let windowAppAdapter = null
 let _usingTouch = false
 
+function safeInit(label, fn) {
+  try {
+    fn()
+  } catch (e) {
+    console.error(`${MODULE_DISPLAY_NAME}: failed to initialize "${label}"`, e)
+  }
+}
+
 function findCanvas() {
   return document.querySelector("canvas#board") ||
     document.querySelector("body > canvas") ||
@@ -45,16 +53,16 @@ function setUsingTouch(usingTouch) {
   if (usingTouch) {
     mouseInteractionManager.LONG_PRESS_DURATION_MS = 99999999
     document.body.classList.add("touchvtt-using-touch")
-    
+
     if (getSetting(REMOVE_HOVER_EFFECTS) || false) {
       try {
         for (let styleSheet of document.styleSheets) {
           if (!styleSheet.cssRules) continue
-    
+
           for (var ri = styleSheet.cssRules.length - 1; ri >= 0; ri--) {
             let selectorText = styleSheet.cssRules[ri].selectorText
             if (!selectorText) continue
-    
+
             if (selectorText.match(":hover") && !selectorText.match(".control-tools")) {
               styleSheet.deleteRule(ri)
             }
@@ -102,13 +110,13 @@ Hooks.once("init", () => {
     }
 
     if (game.release.generation <= 12) {
-      initEnlargeButtonTool()
+      safeInit("enlarge button tool", () => initEnlargeButtonTool())
     }
-    initDirectionalArrows()
-    measuredTemplateManager.initMeasuredTemplateManagement()
-    initWallTools()
+    safeInit("directional arrows", () => initDirectionalArrows())
+    safeInit("measured template management", () => measuredTemplateManager.initMeasuredTemplateManagement())
+    safeInit("wall tools", () => initWallTools())
     if (game.release.generation > 12) {
-      initDragRulerMeasurementHud()
+      safeInit("drag ruler measurement hud", () => initDragRulerMeasurementHud())
     }
 
     if (game.release.generation < 12) {
@@ -118,104 +126,110 @@ Hooks.once("init", () => {
 
     // This wrap gives us control over every MouseInteractionManager
     const mouseInteractionManagerPath = game.release.generation < 13 ? "MouseInteractionManager" : "foundry.canvas.interaction.MouseInteractionManager"
-    wrapMethod(`${mouseInteractionManagerPath}.prototype.callback`, function (originalMethod, event, ...args) {
-      if (event == "clearTimeouts") {
-        clearTimeout(canvasRightClickTimeout)
-        clearTimeout(canvasLongPressTimeout)
-        return
-      }
-      
-      if (getSetting(DEBUG_MODE_SETTING)) {
-        console.log(
-          "TouchVTT: MIM:", this.object.constructor.name, event,
-          "; PIXI event:", args[0].constructor.name, args[0].pointerType, args[0].type, "target=" + args[0].target.constructor.name,
-          "; native event:", args[0].nativeEvent?.constructor.name, args[0].nativeEvent?.pointerType, args[0].nativeEvent?.type, args[0].nativeEvent?.touchvttTrusted, "defaultPrevented=" + args[0].nativeEvent?.defaultPrevented,
-        )
-      }
-      
-      if (["touch", "pen"].includes(args[0].pointerType) || args[0].nativeEvent?.touchvttTrusted) {
-      
-        if (args[0].pointerType === "touch" || args[0].nativeEvent.touchvttTrusted) {
+    safeInit("mouse interaction manager wrap", () => {
+      wrapMethod(`${mouseInteractionManagerPath}.prototype.callback`, function (originalMethod, event, ...args) {
+        if (event == "clearTimeouts") {
+          clearTimeout(canvasRightClickTimeout)
+          clearTimeout(canvasLongPressTimeout)
+          return
+        }
 
-          if (event === "dragLeftMove") {
-            // Prevent movement when using a different pointer id than the initiating one
-            // Avoids issues with the ruler waypoints (and probably others too)
-            args[0].interactionData.pointerId ??= args[0].pointerId
-            if (args[0].pointerId !== args[0].interactionData.pointerId) {
+        if (getSetting(DEBUG_MODE_SETTING)) {
+          console.log(
+            "TouchVTT: MIM:", this.object.constructor.name, event,
+            "; PIXI event:", args[0].constructor.name, args[0].pointerType, args[0].type, "target=" + args[0].target.constructor.name,
+            "; native event:", args[0].nativeEvent?.constructor.name, args[0].nativeEvent?.pointerType, args[0].nativeEvent?.type, args[0].nativeEvent?.touchvttTrusted, "defaultPrevented=" + args[0].nativeEvent?.defaultPrevented,
+          )
+        }
+
+        if (["touch", "pen"].includes(args[0].pointerType) || args[0].nativeEvent?.touchvttTrusted) {
+
+          if (args[0].pointerType === "touch" || args[0].nativeEvent.touchvttTrusted) {
+
+            if (event === "dragLeftMove") {
+              // Prevent movement when using a different pointer id than the initiating one
+              // Avoids issues with the ruler waypoints (and probably others too)
+              args[0].interactionData.pointerId ??= args[0].pointerId
+              if (args[0].pointerId !== args[0].interactionData.pointerId) {
+                return
+              }
+            }
+
+            if (event === "clickLeft2" && getSetting(DISABLE_DBLCLICK)) {
               return
             }
+
+            // Tentative removal - 2025-06-23 (seems to not be needed anymore on v12 and v13)
+            // v12+ only: ugly patch to fix annoying issue where a double-click that opens a sheet also sends one of the clicks to an active listener on the sheet.
+            // For example, you open an actor sheet, if something clickable is under your finger (icon, action, ability, etc.) it will get wrongly clicked.
+            // What we do here is delay the sheet rendering a little bit, and also dispatch a right click on the canvas to avoid a lingering drag select on the placeable.
+            //if (game.release.generation >= 12) {
+            //  if (event === "clickLeft2") {
+            //    await new Promise(resolve => setTimeout(resolve, 100))
+            //    canvas.app.view.dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true, view: window, button: 2}))
+            //    return originalMethod.call(this, event, ...args)
+            //  }
+            //}
+
+            // The right-click timeout is to send a right click on long press (doesn't happen by default on the canvas)
+            // The long press timeout is to send a long press event, mostly used for pinging
+            if (event === "clickLeft") {
+              clearTimeout(canvasRightClickTimeout)
+              clearTimeout(canvasLongPressTimeout)
+              canvasRightClickTimeout = setTimeout(() => {
+                if (canvasTouchPointerEventsManager.touchIds.length < 2) {
+                  // We used to dispatch the pointerup for the original touch, but that clears the timeouts for right-click/longpress. Seems to be ok like this.
+                  //dispatchModifiedEvent(args[0], "pointerup")
+                  dispatchModifiedEvent(args[0], "pointerdown", {button: 2, buttons: 2})
+                }
+              }, getSetting(CANVAS_RIGHT_CLICK_TIMEOUT))
+              canvasLongPressTimeout = setTimeout(() => {
+                if (canvasTouchPointerEventsManager.touchIds.length < 2) {
+                  canvas.currentMouseManager = this
+                  this.callbacks["longPress"](args[0], args[0].interactionData.origin)
+                }
+              }, getSetting(CANVAS_LONG_PRESS_TIMEOUT))
+            } else if (!["clickRight"].includes(event)) {
+              clearTimeout(canvasRightClickTimeout)
+              clearTimeout(canvasLongPressTimeout)
+            }
+
+            callbackForSnapToGrid(event, args)
+
           }
 
-          if (event === "clickLeft2" && getSetting(DISABLE_DBLCLICK)) {
-            return
+          callbackForEasyTarget(event, args)
+
+          // For some reason we receive an empty origin for a touch/pen longPress, but we can get it from the event itself
+          if (event === "longPress" && !args[1]) {
+            args[1] = args[0].interactionData.origin
           }
-      
-          // Tentative removal - 2025-06-23 (seems to not be needed anymore on v12 and v13)
-          // v12+ only: ugly patch to fix annoying issue where a double-click that opens a sheet also sends one of the clicks to an active listener on the sheet.
-          // For example, you open an actor sheet, if something clickable is under your finger (icon, action, ability, etc.) it will get wrongly clicked.
-          // What we do here is delay the sheet rendering a little bit, and also dispatch a right click on the canvas to avoid a lingering drag select on the placeable.
-          //if (game.release.generation >= 12) {
-          //  if (event === "clickLeft2") {
-          //    await new Promise(resolve => setTimeout(resolve, 100))
-          //    canvas.app.view.dispatchEvent(new MouseEvent("contextmenu", {bubbles: true, cancelable: true, view: window, button: 2}))
-          //    return originalMethod.call(this, event, ...args)
-          //  }
-          //}
-      
-          // The right-click timeout is to send a right click on long press (doesn't happen by default on the canvas)
-          // The long press timeout is to send a long press event, mostly used for pinging
-          if (event === "clickLeft") {
-            clearTimeout(canvasRightClickTimeout)
-            clearTimeout(canvasLongPressTimeout)
-            canvasRightClickTimeout = setTimeout(() => {
-              if (canvasTouchPointerEventsManager.touchIds.length < 2) {
-                // We used to dispatch the pointerup for the original touch, but that clears the timeouts for right-click/longpress. Seems to be ok like this.
-                //dispatchModifiedEvent(args[0], "pointerup")
-                dispatchModifiedEvent(args[0], "pointerdown", {button: 2, buttons: 2})
-              }
-            }, getSetting(CANVAS_RIGHT_CLICK_TIMEOUT))
-            canvasLongPressTimeout = setTimeout(() => {
-              if (canvasTouchPointerEventsManager.touchIds.length < 2) {
-                canvas.currentMouseManager = this
-                this.callbacks["longPress"](args[0], args[0].interactionData.origin)
-              }
-            }, getSetting(CANVAS_LONG_PRESS_TIMEOUT))
-          } else if (!["clickRight"].includes(event)) {
-            clearTimeout(canvasRightClickTimeout)
-            clearTimeout(canvasLongPressTimeout)
+
+          // Fix for v13 ruler throwing an error on dragLeftCancel when contexts is not there
+          if (event === "dragLeftCancel" && !args[0].interactionData?.contexts) {
+            foundry.utils.setProperty(args[0], "interactionData.contexts", {})
           }
-          
-          callbackForSnapToGrid(event, args)
-      
-        }
-      
-        callbackForEasyTarget(event, args)
-      
-        // For some reason we receive an empty origin for a touch/pen longPress, but we can get it from the event itself
-        if (event === "longPress" && !args[1]) {
-          args[1] = args[0].interactionData.origin
+
         }
 
-        // Fix for v13 ruler throwing an error on dragLeftCancel when contexts is not there
-        if (event === "dragLeftCancel" && !args[0].interactionData?.contexts) {
-          foundry.utils.setProperty(args[0], "interactionData.contexts", {})
-        }
-        
-      }
-      
-      return originalMethod.call(this, event, ...args)
+        return originalMethod.call(this, event, ...args)
 
-    }, "MIXED")
+      }, "MIXED")
+    })
 
     // This wrap is used for wall chaining: when the chain button is active, pretend we are holding Ctrl
-    wrapMethod("game.keyboard.isModifierActive", function(originalMethod, modifier) {
-      let result = originalMethod.call(this, modifier)
-      result ||= callbackForWallTools(modifier)
-      return result
-    }, "MIXED")
+    safeInit("keyboard modifier wrap", () => {
+      wrapMethod("game.keyboard.isModifierActive", function(originalMethod, modifier) {
+        let result = originalMethod.call(this, modifier)
+        result ||= callbackForWallTools(modifier)
+        return result
+      }, "MIXED")
+    })
 
     // Adapter for various touch events in windows
-    windowAppAdapter = WindowAppAdapter.init()
+    safeInit("window app adapter", () => {
+      windowAppAdapter = WindowAppAdapter.init()
+    })
 
   } else {
     console.info(`${MODULE_DISPLAY_NAME} is active, but core functionality has been disabled in the settings.`)
@@ -226,7 +240,9 @@ Hooks.once("init", () => {
 Hooks.on("canvasReady", function() {
   if (getSetting(CORE_FUNCTIONALITY) || false) {
     // This (together with the hud init in the ready hook) gives the user a touch-friendly UI for pre-made templates (like from an automatic "Place Measured Template" chat button, or MidiQOL)
-    canvas.templates.preview.on("childAdded", measuredTemplateManager.onTemplatePreviewCreated.bind(measuredTemplateManager))
+    safeInit("template preview listener", () => {
+      canvas.templates.preview.on("childAdded", measuredTemplateManager.onTemplatePreviewCreated.bind(measuredTemplateManager))
+    })
   }
 })
 
