@@ -39,7 +39,7 @@ class CanvasTouchPointerEventsManager extends TouchPointerEventsManager {
       dispatchModifiedEvent(evt, "pointerup")
       return false
     }
-    document.body.addEventListener("pointerdown", evt => {  
+    document.body.addEventListener("pointerdown", evt => {
       if (evt.isTrusted && !evt.pressure && evt.target === element) {
         evt.preventDefault()
         evt.stopPropagation()
@@ -64,11 +64,11 @@ class CanvasTouchPointerEventsManager extends TouchPointerEventsManager {
             evt.preventDefault()
             evt.stopPropagation()
             evt.stopImmediatePropagation()
-            
+
             if (["pointerdown", "pointermove"].includes(evt.type)) {
               dispatchModifiedEvent(evt, "pointermove", {button: -1, buttons: 0})
             }
-      
+
             if (evt.type !== "touchstart" && !(evt.type == "pointerleave" && evt.pointerType != "pen")) {
               dispatchCopy(evt)
             }
@@ -79,7 +79,7 @@ class CanvasTouchPointerEventsManager extends TouchPointerEventsManager {
           passive: false,
         })
       })
-    
+
       // Force hover check on every placeable in the active layer on every pointerdown/pointerup
       // Also pointermove, but only our own
       Array("pointerdown", "pointerup", "pointermove").forEach(e => {
@@ -148,7 +148,7 @@ class CanvasTouchPointerEventsManager extends TouchPointerEventsManager {
 
   handleTouchMove(event) {
     this.updateActiveTouch(event)
-    
+
     switch (this.touchIds.length) {
       case 2:
         if (this.gesturesEnabled()) {
@@ -298,12 +298,12 @@ class CanvasTouchPointerEventsManager extends TouchPointerEventsManager {
       //}
 
       // It seems to me that panning to the center between the touches is disorienting and creates unwanted movement
-      // I prefer trying out this version where we anchor to the first touch, I'll leave the existing above in case we want to revert 
+      // I prefer trying out this version where we anchor to the first touch, I'll leave the existing above in case we want to revert
       let panCorrection = this.calcPanCorrection(adjustedTransform, this.touches[touchIds[0]])
-      
+
       const centerBefore = FoundryCanvas.screenToWorld(Screen.center)
       const worldCenter = Vectors.subtract(centerBefore, panCorrection)
-      
+
       FoundryCanvas.pan({ x: worldCenter.x, y: worldCenter.y })
     }
   }

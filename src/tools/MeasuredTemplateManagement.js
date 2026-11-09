@@ -53,7 +53,7 @@ class TouchMeasuredTemplateHud extends Application {
       this._currentTemplate.document.updateSource({direction: this._currentTemplate.document.direction + 15})
       this._currentTemplate.refresh()
     })
-    
+
     html.find(".confirm").on("pointerdown", () => {
       this._templateManager.toggleMeasuredTemplateTouchManagementListeners(false)
       this._templateManager._touchMode = false
@@ -73,7 +73,9 @@ class TouchMeasuredTemplateHud extends Application {
 
   async show(template) {
     this._currentTemplate = template
-    const worldPosition = {x: template.document.x, y: template.document.y}
+    const worldPosition = game.release.generation < 14
+      ? {x: template.document.x, y: template.document.y}
+      : {x: template.document.shapes[0].x, y: template.document.shapes[0].y}
     if (this._templateManager._touchMode) {
       this._worldPosition = worldPosition
       const screenPosition = FoundryCanvas.worldToScreen(worldPosition)
@@ -119,13 +121,20 @@ export class MeasuredTemplateManager {
   constructor() {
     this._touchMode = false
     this._touchEventReplacer = this.touchEventReplacer.bind(this)
+    this._pointerDown = false
+    window.addEventListener("pointerdown", () => { this._pointerDown = true }, true)
+    window.addEventListener("pointerup", () => { this._pointerDown = false }, true)
   }
 
   get templateLayerPath() {
-    return game.release.generation < 13 ? "TemplateLayer" : "foundry.canvas.layers.TemplateLayer"
+    if (game.release.generation < 13) return "TemplateLayer"
+    if (game.release.generation < 14) return "foundry.canvas.layers.TemplateLayer"
+    return "foundry.canvas.layers.RegionLayer"
   }
   get measuredTemplatePath() {
-    return game.release.generation < 13 ? "MeasuredTemplate" : "foundry.canvas.placeables.MeasuredTemplate"
+    if (game.release.generation < 13) return "MeasuredTemplate"
+    if (game.release.generation < 14) return "foundry.canvas.placeables.MeasuredTemplate"
+    return "foundry.canvas.placeables.Region"
   }
 
   initMeasuredTemplateHud(touchPointerEventsManager) {
@@ -185,7 +194,7 @@ export class MeasuredTemplateManager {
 
   initMeasuredTemplateManagement() {
     const isEraserActive = () => game.activeTool === TOOL_NAME_ERASE
-    const shouldIgnoreEvent = () => !isEraserActive() && !this._touchMode 
+    const shouldIgnoreEvent = () => !isEraserActive() && !this._touchMode
 
     injectMethodCondition(`${this.templateLayerPath}.prototype._onDragLeftStart`, shouldIgnoreEvent)
     injectMethodCondition(`${this.templateLayerPath}.prototype._onDragLeftMove`, shouldIgnoreEvent)
@@ -206,6 +215,13 @@ export class MeasuredTemplateManager {
   }
 
   isPremade(template) {
+    if (game.release.generation >= 14) {
+      // Regions no longer have a single "distance" field to tell a manual drag apart from a
+      // pre-made placement. Instead, we check whether a pointer/touch is currently pressed:
+      // a manual drag always starts with the finger down (that's what creates the shape);
+      // a pre-made placement (automation) follows the cursor with nothing pressed.
+      return canvas.regions.templateMode && !this._pointerDown
+    }
     // Explaining the condition here for future reference:
     // A pre-made template doesn't have an id, and has a distance already set, usually larger than half a square.
     // A template created by dragging triggers two draws: on dragStart, it doesn't have an id and has distance 1 (in v11) or half a square (in v12); on confirmation, it has an id, and has a set distance
@@ -221,7 +237,8 @@ MeasuredTemplateManager.init = function init() {
 }
 
 export function installMeasurementTemplateEraser(menuStructure) {
-  addSceneControlButton(menuStructure, "templates", {
+  const controlCategory = game.release.generation < 14 ? "templates" : "regions"
+  addSceneControlButton(menuStructure, controlCategory, {
     name: TOOL_NAME_ERASE,
     title: "TOUCHVTT.Erase",
     icon: "fas fa-eraser"
