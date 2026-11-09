@@ -1,5 +1,7 @@
 //https://github.com/Bernardo-Castilho/dragdroptouch
 
+export {} // Marks this vendored script as an ES module so `import()` can target it from TS code
+
 let DragDropTouch;
 (function (DragDropTouch_1) {
     'use strict';

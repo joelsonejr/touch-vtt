@@ -1,0 +1,225 @@
+import {MODULE_NAME} from "../config/ModuleConstants.js"
+import {wrapMethod} from "../utils/Injection.js"
+import FoundryCanvas from "../foundryvtt/FoundryCanvas.js"
+import Vectors, { type Point } from "../logic/Vectors.js"
+import {getSetting, MEASUREMENT_HUD_LEFT, MEASUREMENT_HUD_OFF, MEASUREMENT_HUD_SETTING} from "../config/TouchSettings.js"
+import type CanvasTouchPointerEventsManager from "../logic/CanvasTouchPointerEventsManager.js"
+
+class TouchMeasurementHud extends Application {
+  _touchPointerEventsManager: CanvasTouchPointerEventsManager
+  _worldPosition: Point | null
+  _screenPosition: { top?: number, left?: number }
+
+  constructor({ touchPointerEventsManager }: { touchPointerEventsManager: CanvasTouchPointerEventsManager }) {
+    super()
+
+    this._touchPointerEventsManager = touchPointerEventsManager
+    this._worldPosition = null
+    this._screenPosition = {}
+  }
+
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "touch-measurement-hud",
+      template: `/modules/${MODULE_NAME}/templates/measurement-hud.hbs`,
+      popOut: false,
+      width: 200,
+      height: 100,
+      left: 150,
+      top: 80,
+      scale: 1,
+      minimizable: false,
+      resizable: false,
+      dragDrop: [],
+      tabs: [],
+      scrollY: [],
+    })
+  }
+
+  getData(...args: any[]) {
+    const data: any = super.getData(...args)
+    data.id = this.options.id
+    data.top = this._screenPosition.top
+    data.left = this._screenPosition.left
+    data.offsetX = this.calcOffsetX()
+    data.showRuler = !Vectors.isEqual(this._worldPosition ?? { x: 0, y: 0 }, this.lastWaypoint)
+    data.showMove = this.canMoveToken()
+    data.showCancel = !!(canvas!.tokens as any)._draggedToken
+    return data
+  }
+
+  activateListeners(html: JQuery | HTMLElement) {
+    const element: HTMLElement = (html as JQuery)[0] ?? (html as HTMLElement)
+
+    element.querySelector(".control-icon")?.addEventListener("pointerup", (evt) => {
+      const target = evt.target as HTMLElement
+      if (target.closest(".waypoint")) {
+        if ((canvas!.tokens as any)._draggedToken) {
+          // This is the v13+ drag ruler
+          Object.values((canvas!.tokens as any)._draggedToken.mouseInteractionManager.interactionData.contexts).forEach((context: any) => {
+            context.token._addDragWaypoint(context.clonedToken.transform.position, {snap: canvas!.scene!.grid.type !== CONST.GRID_TYPES.GRIDLESS})
+          })
+        } else {
+          // Regular old ruler
+          const ruler: any = FoundryCanvas.ruler
+          if (ruler != null) {
+            if (game.release!.generation < 13) {
+              ruler._addWaypoint(this._worldPosition)
+            } else {
+              ruler.path = [...ruler.path.slice(0, -1), this._worldPosition, this._worldPosition]
+            }
+            this.render()
+          }
+        }
+        evt.preventDefault()
+        evt.stopPropagation()
+        evt.stopImmediatePropagation()
+        return false
+      } else if (target.closest(".move")) {
+        const ruler: any = FoundryCanvas.ruler
+        if (ruler != null && typeof ruler.moveToken === "function") {
+          const token = ruler.token || ruler._getMovementToken()
+          token.document.locked = false
+          ruler.moveToken()
+          this.render()
+        }
+      } else if (target.closest(".cancel")) {
+        ;(canvas!.tokens as any)._draggedToken.mouseInteractionManager.cancel()
+      }
+    }, true)
+  }
+
+  async show(worldPosition: Point) {
+    this._worldPosition = worldPosition
+    const screenPosition = FoundryCanvas.worldToScreen(worldPosition)
+    this.setScreenPosition({
+      left: screenPosition.x,
+      top: screenPosition.y,
+    })
+
+    const states = (this.constructor as any).RENDER_STATES
+    await this.render((this as any)._state <= states.NONE)
+
+    this._touchPointerEventsManager.disableGestures()
+  }
+
+  clear() {
+    const states = (this.constructor as any).RENDER_STATES
+    if ((this as any)._state <= states.NONE) return
+    ;(this as any)._state = states.CLOSING
+
+    this.element.hide()
+    ;(this as any)._state = states.NONE
+
+    this._touchPointerEventsManager.enableGestures()
+  }
+
+  setScreenPosition({top, left}: { top: number, left: number }) {
+    this._screenPosition = { top, left }
+  }
+
+  get lastWaypoint(): Point {
+    const ruler: any = FoundryCanvas.ruler
+    if (game.release!.generation <= 12) {
+      return ruler?.waypoints.at(-1) ?? {}
+    } else {
+      return ruler?.path.at(-2) ?? {}
+    }
+  }
+
+  canMoveToken(): boolean {
+    if (game.release!.generation >= 13) {
+      // We just don't use the move button at all on v13+
+      return false
+    }
+
+    const ruler: any = FoundryCanvas.ruler
+    if (ruler == null) {
+      return false
+    }
+    if (game.paused && !game.user!.isGM) {
+      return false
+    }
+    if (!ruler.visible || !ruler.destination) return false
+    return ruler._getMovementToken(ruler.origin) != null
+  }
+
+  calcOffsetX(): string {
+    const offset = FoundryCanvas.worldToScreenLength(FoundryCanvas.gridSize) * 0.75
+    if (getSettingValue() === MEASUREMENT_HUD_LEFT) {
+      return `calc(-100% - ${offset}px)`
+    } else {
+      return `${offset}px`
+    }
+  }
+}
+
+export function initDragRulerMeasurementHud() {
+    wrapMethod<(this: any, event: any) => void>("foundry.canvas.placeables.Token.prototype._onDragLeftMove", function (wrapped, ...args) {
+      if (isEnabled() && document.body.classList.contains("touchvtt-using-touch")) {
+        const event = args[0]
+        const {destination} = event.interactionData
+        ;((canvas!.hud as any).touchMeasurement as TouchMeasurementHud).show(this.document.getSnappedPosition(destination))
+      }
+      else {
+        (canvas!.hud as any).touchMeasurement.clear()
+      }
+      return wrapped.call(this, ...args)
+    }, "MIXED")
+    wrapMethod<(this: any, event: any) => void>("foundry.canvas.placeables.Token.prototype._onDragLeftCancel", function (wrapped, ...args) {
+      (canvas!.hud as any).touchMeasurement.clear()
+      return wrapped.call(this, ...args)
+    }, "MIXED")
+}
+
+export function initMeasurementHud({ touchPointerEventsManager }: { touchPointerEventsManager: CanvasTouchPointerEventsManager }) {
+  if ((canvas!.hud as any).touchMeasurement == null) {
+    (canvas!.hud as any).touchMeasurement = new TouchMeasurementHud({ touchPointerEventsManager })
+    const rulerPath = game.release!.generation < 13 ? "Ruler" : "foundry.canvas.interaction.Ruler"
+
+    if (game.release!.generation < 13) {
+      wrapMethod<(this: any, destination: any, ...args: any[]) => any>(`${rulerPath}.prototype.measure`, function (wrapped, destination, ...args) {
+        const segments = wrapped.call(this, destination, ...args)
+        //if (Array.isArray(segments) && isOwnRuler(this) && isEnabled() && destination?.originType === "touch") {
+        if (Array.isArray(segments) && isOwnRuler(this) && isEnabled() && document.body.classList.contains("touchvtt-using-touch")) {
+          if (segments.length > 0) {
+            const lastSegment: any = segments[segments.length - 1]
+            ;((canvas!.hud as any).touchMeasurement as TouchMeasurementHud).show(lastSegment.ray.B)
+          } else {
+            (canvas!.hud as any).touchMeasurement.clear()
+          }
+        }
+        return segments
+      })
+    } else {
+      wrapMethod<(this: any, ...args: any[]) => any>(`${rulerPath}.prototype._onPathChange`, function (wrapped, ...args) {
+        if (this.path.length > 0 && isOwnRuler(this) && isEnabled() && document.body.classList.contains("touchvtt-using-touch")) {
+          ((canvas!.hud as any).touchMeasurement as TouchMeasurementHud).show(this.destination)
+        } else {
+          (canvas!.hud as any).touchMeasurement.clear()
+        }
+        return wrapped.call(this, ...args)
+      })
+    }
+
+    wrapMethod<(this: any, ...args: any[]) => any>(`${rulerPath}.prototype.clear`, function (wrapped, ...args) {
+      const superResult = wrapped.call(this, ...args)
+      if (isOwnRuler(this)) {
+        (canvas!.hud as any).touchMeasurement.clear()
+      }
+      return superResult
+    })
+  }
+}
+
+function isOwnRuler(ruler: any): boolean {
+  return FoundryCanvas.ruler === ruler
+}
+
+function getSettingValue() {
+  return getSetting(MEASUREMENT_HUD_SETTING)
+}
+
+function isEnabled(): boolean {
+  return getSettingValue() !== MEASUREMENT_HUD_OFF
+}
